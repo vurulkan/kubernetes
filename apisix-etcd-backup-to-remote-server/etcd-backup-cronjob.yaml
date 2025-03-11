@@ -1,0 +1,90 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: etcd-backup
+  namespace: ingress
+spec:
+  schedule: "0 2 * * *"  # Runs every night at 02:00
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: etcd-backup-sa  # Service Account
+          containers:
+          - name: etcd-backup
+            image: bitnami/kubectl:latest
+            command:
+              - /bin/sh
+              - -c
+              - |
+                apt-get update && apt-get install -y openssh-client
+                set -e
+                BACKUP_DIR="/tmp"
+                TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+                BACKUP_FILE="$BACKUP_DIR/etcd-backup-$TIMESTAMP.db"
+                LOCAL_SERVER="10.42.0.200"
+                LOCAL_USER="etcdbackup"
+                LOCAL_PATH="/home/etcdbackup/apisix-etcd-backup"
+
+                echo "📌 Finding ETCD Leader Pod..."
+                LEADER_POD=""
+                for POD in apisix-main-etcd-0 apisix-main-etcd-1 apisix-main-etcd-2; do
+                  STATUS=$(kubectl exec -n ingress $POD -- etcdctl endpoint status --write-out=json | jq -r '.[0].Status.leader' || echo "error")
+                  if [ "$STATUS" != "0" ] && [ "$STATUS" != "error" ]; then
+                    LEADER_POD="$POD"
+                    break
+                  fi
+                done
+
+                if [ -z "$LEADER_POD" ]; then
+                  echo "❌ Leader pod not found! Exiting..."
+                  exit 1
+                fi
+
+                echo "✅ Leader Pod: $LEADER_POD"
+
+                echo "📌 Backing up..."
+                kubectl exec -n ingress $LEADER_POD -- etcdctl snapshot save /tmp/etcd-backup.db
+                kubectl cp "ingress/$LEADER_POD:/tmp/etcd-backup.db" "$BACKUP_FILE"
+
+                if [ $? -eq 0 ]; then
+                  echo "✅ Successfully backuped: $BACKUP_FILE"
+                else
+                  echo "❌ Backup failed!"
+                  exit 1
+                fi
+
+                export HOME=/tmp
+                mkdir -p $HOME/.ssh
+                chmod 600 $HOME/.ssh
+                cp /ssh/.ssh/id_rsa $HOME/.ssh/id_rsa
+                chmod 600 $HOME/.ssh/id_rsa
+
+                sftp -o StrictHostKeyChecking=no -i $HOME/.ssh/id_rsa $LOCAL_USER@$LOCAL_SERVER <<EOF
+                put $BACKUP_FILE $LOCAL_PATH/etcd-backup-$TIMESTAMP.db
+                bye
+                EOF
+
+                if [ $? -eq 0 ]; then
+                  echo "✅ Backup successfully sent to remote server."
+                else
+                  echo "❌ Backup transfer failed!"
+                  exit 1
+                fi
+
+                echo "📌 Cleaning temporary backup file..."
+                rm -f $BACKUP_FILE
+            securityContext:
+              runAsUser: 0
+              runAsGroup: 0
+              privileged: true
+
+            volumeMounts:
+              - name: ssh-key-volume
+                mountPath: /ssh/.ssh
+                readOnly: true
+          restartPolicy: OnFailure
+          volumes:
+            - name: ssh-key-volume
+              secret:
+                secretName: sftp-secret
