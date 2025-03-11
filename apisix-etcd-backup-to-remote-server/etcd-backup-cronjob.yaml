@@ -2,7 +2,6 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: etcd-backup
-  namespace: ingress
 spec:
   schedule: "0 2 * * *"  # Runs every night at 02:00
   jobTemplate:
