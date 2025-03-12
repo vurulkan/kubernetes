@@ -11,6 +11,10 @@ LOCAL_SERVER="10.42.0.200"
 LOCAL_USER="etcdbackup"
 LOCAL_PATH="/home/etcdbackup/apisix-etcd-backup"
 ```
+and apisix etcd pod names;
+```bash
+apisix-main-etcd-0 apisix-main-etcd-1 apisix-main-etcd-2
+```
 ## 🔑 Generating an SSH Key Pair
 
 ```bash
